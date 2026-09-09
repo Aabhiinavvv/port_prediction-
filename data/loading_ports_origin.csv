@@ -1,0 +1,15 @@
+port_code,port_name,country,max_draft_m,max_loa_m,max_beam_m,cargo_handling_rate_tpd
+AUNTL,Newcastle,Australia,17.5,350,50,60000
+AUGLT,Gladstone,Australia,16.3,300,48,50000
+AUHPT,Hay Point,Australia,17.0,320,48,55000
+AUABT,Abbot Point,Australia,17.5,300,48,45000
+USHRV,Hampton Roads/Norfolk,USA,18.0,330,48,40000
+USBLT,Baltimore,USA,13.7,290,45,30000
+USNOR,New Orleans,USA,13.5,280,44,32000
+MZBEW,Beira,Mozambique,8.5,200,32,15000
+MZNAC,Nacala,Mozambique,16.0,280,45,25000
+IDSMR,Samarinda/Muara Berau anchorage,Indonesia,13.0,250,40,20000
+IDTBN,Taboneo anchorage (Banjarmasin),Indonesia,12.5,240,38,18000
+IDBPN,Balikpapan,Indonesia,14.0,260,40,22000
+RUVOS,Vostochny,Russia,16.5,300,47,35000
+RUNAK,Nakhodka,Russia,14.5,260,40,28000

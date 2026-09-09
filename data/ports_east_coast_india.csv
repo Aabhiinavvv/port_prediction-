@@ -1,0 +1,8 @@
+port_code,port_name,state,max_draft_m,max_loa_m,max_beam_m,dry_bulk_berths,cargo_handling_rate_tpd,avg_pre_berthing_delay_days
+INPAR,Paradip,Odisha,18.0,300,48,6,45000,1.5
+INVIZ,Visakhapatnam,Andhra Pradesh,17.0,280,45,5,40000,2.0
+INGAN,Gangavaram,Andhra Pradesh,20.0,320,50,3,50000,1.0
+INGOP,Gopalpur,Odisha,17.5,290,45,2,35000,1.2
+INDHM,Dhamra,Odisha,20.5,330,50,3,55000,0.8
+INHAL,Haldia,West Bengal,9.0,186,30,4,20000,3.5
+INKOL,Kolkata (Sagar anchorage transfer),West Bengal,8.5,180,28,3,15000,4.0

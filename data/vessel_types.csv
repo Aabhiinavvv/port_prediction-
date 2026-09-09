@@ -1,0 +1,5 @@
+vessel_type,dwt_min,dwt_max,typical_loa_m,typical_beam_m,typical_draft_m
+Handysize,28000,38000,180,30.0,10.5
+Supramax,50000,60000,200,32.0,12.5
+Panamax,65000,80000,225,32.3,14.0
+Capesize,150000,180000,290,45.0,18.0

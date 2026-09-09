@@ -1,0 +1,7 @@
+pandas>=2.2,<3
+numpy
+scikit-learn
+xgboost
+statsmodels
+pulp
+streamlit

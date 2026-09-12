@@ -11,6 +11,10 @@ import xgboost as xgb
 from live_data import live_context
 from charter_strategy import recommend_strategy
 from alerts import build_alerts
+from decision_support import (
+    decision_audit, fleet_availability, freight_scenarios, optimize_vessels,
+    port_scorecard, risk_cockpit, standards_mapping,
+)
 try:
     import shap
     HAS_SHAP = True
@@ -162,6 +166,7 @@ def main():
         voyages = st.selectbox("Charter strategy", [1, 3, 6], format_func=lambda n: "Spot / one voyage" if n == 1 else f"{n}-voyage {'short' if n == 3 else 'medium'} term")
         laycan = st.date_input("Laycan start", date.today() + timedelta(days=21))
         congestion = st.slider("Congestion scenario (0–100)", 0, 100, 45)
+        optimization_priority = st.selectbox("Optimization priority", ["Balanced", "Lowest cost", "Lowest CO₂", "Highest reliability"])
         with st.expander("Just-in-Time port-call assumptions"):
             fuel_price = st.number_input("Bunker fuel price (USD/tonne)", 300, 1200, 650, 25)
             berth_adjustment = st.slider("Berth-window adjustment (hours)", -72, 168, 0,
@@ -181,14 +186,16 @@ def main():
         st.dataframe(eligibility, hide_index=True)
         st.stop()
 
+    fleet = fleet_availability(vessels)
+    candidates = candidates.merge(fleet, on="vessel_type", how="left")
     predictions = {}
     for vessel in candidates.vessel_type:
         predictions[vessel] = forecast_route(ts, route_id, vessel)
     candidates["forecast_rate"] = candidates.vessel_type.map(lambda v: predictions[v][0])
     candidates["total_freight"] = candidates.forecast_rate * cargo
     candidates["fit_score"] = 100 - abs(candidates.utilisation - .85) * 65
-    candidates["decision_score"] = candidates.fit_score - candidates.forecast_rate.rank(pct=True) * 10
-    best = candidates.sort_values("decision_score", ascending=False).iloc[0]
+    candidates = optimize_vessels(candidates, route.distance_nm, congestion, optimization_priority)
+    best = candidates.iloc[0]
     rate, uncertainty, outlook, impacts, explanation = predictions[best.vessel_type]
     trough = outlook.loc[outlook.forecast_usd_t.idxmin()]
     load_days = cargo / origin.cargo_handling_rate_tpd + 1.2 * (1 + congestion / 100)
@@ -209,6 +216,8 @@ def main():
     mape = float(validation.iloc[0].mape_pct) if not validation.empty else np.nan
     strategy = recommend_strategy(scenarios, outlook, laycan, risk, cargo, best.vessel_type, cycle)
     jit = just_in_time_plan(route, dest, best.vessel_type, congestion, fuel_price, berth_adjustment)
+    scenario_paths = freight_scenarios(outlook, congestion)
+    benchmark_ports = port_scorecard(india_ports, cargo)
     weather_context = None
     if "live" in st.session_state:
         weather_context = {"loading port": st.session_state["live"].get("origin_marine"), "discharge port": st.session_state["live"].get("destination_marine")}
@@ -218,6 +227,8 @@ def main():
         entry_date=strategy["entry_date"], laycan=laycan, weather_context=weather_context,
     )
     alert_count = sum(a["severity"] in {"Critical", "Warning"} for a in alerts)
+    risk_details = risk_cockpit(congestion, uncertainty, rate, load_days + discharge_days, int(best.next_available_days), jit["risk"])
+    audit = decision_audit(route_id, best.vessel_type, cargo, optimization_priority, risk, jit["action"], "Synthetic freight series; scenario assumptions; optional public API context")
 
     st.markdown(f"""
     <div class="hero">
@@ -233,7 +244,7 @@ def main():
     c.metric("Voyage cycle", f"{cycle:.1f} days", f"Sailing {sailing_days:.1f} days")
     d.metric("Active alerts", alert_count, "Review required" if alert_count else "No critical trigger")
 
-    tabs = st.tabs(["Executive brief", "Strategy engine", "JIT port call", "Forecast & XAI", "Port feasibility", "Multi-voyage plan", "Risk & resilience", "Live data & governance"])
+    tabs = st.tabs(["Executive brief", "Vessel optimizer", "JIT digital twin", "Scenario studio", "Forecast & XAI", "Port scorecard", "Fleet & multi-voyage", "Risk & audit", "Standards & data"])
     with tabs[0]:
         st.subheader("Decision for approval")
         st.markdown(f"""
@@ -258,20 +269,20 @@ def main():
             else: st.info(message)
 
     with tabs[1]:
-        st.subheader("Commercial strategy engine")
-        st.write("The engine converts forecast, port fit, market uncertainty and laycan feasibility into an explicit charter posture. It prioritizes procurement savings while protecting supply reliability.")
+        st.subheader("Multi-objective vessel optimization")
+        st.write("The selected priority balances freight cost, CO₂, parcel fit and fleet availability. Every eligible class remains visible so the recommendation can be challenged.")
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Recommended cover", f"{strategy['recommended_voyages']} voyages")
-        s2.metric("Preferred entry", strategy["entry_date"].strftime("%d %b"), f"${strategy['entry_rate']:.2f}/MT")
-        s3.metric("Wait-versus-fix opportunity", f"{strategy['rate_gap_pct']:.1f}%")
-        s4.metric("Forecast spread", f"{strategy['volatility_pct']:.1f}%")
-        st.subheader("Strategy safeguards to negotiate")
-        safeguard = pd.DataFrame({"contract protection": strategy["protections"], "business purpose": ["Limits freight-market upside while retaining fair-market linkage", "Protects supply continuity during berth/terminal disruption", "Prevents avoidable demurrage and idle-time disputes", "Reduces deadheading and vessel idle cost"]})
-        st.dataframe(safeguard, hide_index=True, use_container_width=True)
-        st.caption("Recommendation is decision support only. Chartering desk approval, vessel vetting, sanctions/compliance checks and terminal confirmation remain mandatory.")
+        s1.metric("Recommended class", best.vessel_type, f"Score {best.multi_objective_score:.1f}/100")
+        s2.metric("Expected freight", f"${best.forecast_rate:.2f}/MT", f"${best.total_freight:,.0f} parcel cost")
+        s3.metric("Voyage CO₂", f"{best.voyage_co2_tonnes:.0f} t", "Class estimate")
+        s4.metric("Fleet readiness", f"{best.next_available_days} days", best.availability_status)
+        optimizer_view = candidates[["vessel_type", "multi_objective_score", "forecast_rate", "total_freight", "utilisation", "voyage_co2_tonnes", "available_hulls", "next_available_days", "availability_status"]].copy()
+        optimizer_view[["multi_objective_score", "forecast_rate", "total_freight", "utilisation", "voyage_co2_tonnes"]] = optimizer_view[["multi_objective_score", "forecast_rate", "total_freight", "utilisation", "voyage_co2_tonnes"]].round(2)
+        st.dataframe(optimizer_view, hide_index=True, use_container_width=True)
+        st.caption("Fleet availability is an explicit prototype constraint. Replace the roster with vessel positions, open employment and laycan-ready dates from the fleet system.")
 
     with tabs[2]:
-        st.subheader("Just-in-Time arrival recommendation")
+        st.subheader("Just-in-Time arrival digital twin")
         st.success(f"⚓ **{jit['action']}**")
         j1, j2, j3, j4 = st.columns(4)
         j1.metric("Predicted berth-ready", f"{jit['berth_ready_days']:.1f} days")
@@ -291,6 +302,18 @@ def main():
         )
 
     with tabs[3]:
+        st.subheader("Freight-rate scenario studio")
+        st.write("Stress-test the 60-day baseline instead of treating a single forecast as a fixture quote.")
+        scenario_chart = scenario_paths.pivot(index="date", columns="scenario", values="rate_usd_mt")
+        st.line_chart(scenario_chart, use_container_width=True)
+        scenario_summary = scenario_paths.groupby("scenario", as_index=False).agg(
+            lowest_rate=("rate_usd_mt", "min"), average_rate=("rate_usd_mt", "mean"),
+            cargo_cost_at_average=("rate_usd_mt", lambda x: x.mean() * cargo),
+        )
+        st.dataframe(scenario_summary.round(2), hide_index=True, use_container_width=True)
+        st.caption("Scenarios apply transparent multipliers to the model baseline. They are decision stress tests, not live market quotations.")
+
+    with tabs[4]:
         st.subheader("60-day rate outlook")
         recent = ts[(ts.route_id == route_id) & (ts.vessel_type == best.vessel_type)].sort_values("date").tail(90)[["date", TARGET]].rename(columns={TARGET: "observed_history"})
         chart = recent.set_index("date").join(outlook.set_index("date")[["p10", "forecast_usd_t", "p90"]], how="outer")
@@ -306,7 +329,15 @@ def main():
         st.caption(f"Local {explanation} values for the selected XGBoost forecast: positive values raise the predicted freight rate; negative values reduce it. Install the declared `shap` package for exact SHAP values.")
         if not validation.empty: st.caption(f"Historical validation reference for this route/vessel: MAPE {validation.iloc[0].mape_pct}%, RMSE {validation.iloc[0].rmse}.")
 
-    with tabs[4]:
+    with tabs[5]:
+        st.subheader("Port performance and benchmark scorecard")
+        selected_score = benchmark_ports[benchmark_ports.port_code == dest_code].iloc[0]
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Selected port score", f"{selected_score.port_performance_score:.1f}/100")
+        p2.metric("Estimated port time", f"{selected_score.estimated_port_days:.1f} days")
+        p3.metric("Benchmark rank", f"#{benchmark_ports.index.get_loc(selected_score.name) + 1} of {len(benchmark_ports)}")
+        st.dataframe(benchmark_ports.round(2), hide_index=True, use_container_width=True)
+        st.caption("Planning benchmark uses local berth capacity, handling rate and average pre-berthing delay. It is not a replacement for the World Bank CPPI or live terminal KPI feed.")
         st.subheader("Two-port constraint gate")
         st.dataframe(pd.DataFrame([origin, dest])[ ["port_name", "max_draft_m", "max_loa_m", "max_beam_m", "cargo_handling_rate_tpd"] ], hide_index=True, use_container_width=True)
         show = eligibility[["vessel_type", "dwt_max", "typical_draft_m", "typical_loa_m", "typical_beam_m", "utilisation", "eligible"]].copy()
@@ -314,14 +345,27 @@ def main():
         st.dataframe(show, hide_index=True, use_container_width=True)
         st.warning("Planning limits only: confirm berth nomination, tidal/seasonal draft, terminal acceptance, cargo density and stowage with the port/chartering desk before fixing.")
 
-    with tabs[5]:
+    with tabs[6]:
+        st.subheader("Real fleet availability constraints")
+        st.dataframe(fleet, hide_index=True, use_container_width=True)
+        st.write("A vessel class is not selectable merely because it fits the port: it must also have an available hull before laycan. The optimizer penalizes late availability and exposes the constraint above.")
         st.subheader("Spot versus multiple-voyage contract strategy")
         st.dataframe(scenarios, hide_index=True, use_container_width=True)
         st.bar_chart(scenarios.set_index("voyages")[["all_in_cost_usd"]], use_container_width=True)
         st.success(f"Selected {voyages}-voyage scenario: indicative saving vs repeated spot entry **${selected_scenario.saving_vs_repeated_spot_usd:,.0f}**. This is a planning scenario, not a price guarantee.")
         st.write("Idle-management clause: define congestion trigger, alternate-port option, and next-employment/ballast plan before signing the multi-voyage agreement.")
 
-    with tabs[6]:
+    with tabs[7]:
+        st.subheader("Explainable risk cockpit")
+        r1, r2 = st.columns([1.2, 1])
+        with r1:
+            st.dataframe(risk_details, hide_index=True, use_container_width=True)
+        with r2:
+            st.metric("Composite risk", f"{risk}/100", "Review required" if risk >= 60 else "Within selected appetite")
+            st.bar_chart(risk_details.set_index("risk_driver")[["score"]], use_container_width=True)
+        st.subheader("Decision explanation and audit trail")
+        st.dataframe(audit, hide_index=True, use_container_width=True)
+        st.download_button("Download decision audit trail", audit.to_csv(index=False).encode(), "decision_audit.csv", "text/csv")
         st.subheader("Early-warning and resilience plan")
         st.dataframe(pd.DataFrame(alerts), hide_index=True, use_container_width=True)
         risk_rows = pd.DataFrame([
@@ -336,7 +380,10 @@ def main():
         else:
             st.success("Risk is within the selected appetite. Re-run the scenario when congestion or expected cargo readiness changes materially.")
 
-    with tabs[7]:
+    with tabs[8]:
+        st.subheader("Standards-ready data model")
+        st.dataframe(standards_mapping(), hide_index=True, use_container_width=True)
+        st.caption("The mapping keeps event ownership and production data sources explicit, preparing the dashboard for DCSA Port Call and IMO Maritime Single Window interoperability.")
         st.subheader("Free API context — optional enrichment")
         if st.button("Refresh World Bank + Open-Meteo context"):
             st.session_state["live"] = live_context(route.origin_port_code, dest_code, route.origin_country)

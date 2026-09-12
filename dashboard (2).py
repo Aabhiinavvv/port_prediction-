@@ -1,15 +1,4 @@
-"""
-Freight Forecasting Dashboard — Streamlit app
-Run with: streamlit run dashboard.py
 
-Ties together all 4 modules:
-  1. Forecasting  (loads pre-trained per-route XGBoost accuracy from
-     all_routes_forecast_summary.csv, and trains on the fly for the
-     selected route/vessel to get an actual next-value prediction)
-  2. Vessel optimization (constraint filter + cost comparison across vessel types)
-  3. Idle-risk flag (rolling z-score, same rule as the ground-truth label)
-  4. Anomaly/risk flag (Isolation Forest on recent window)
-"""
 import streamlit as st
 import pandas as pd
 import numpy as np

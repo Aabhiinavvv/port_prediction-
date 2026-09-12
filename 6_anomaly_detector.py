@@ -1,10 +1,4 @@
-"""
-Module 4 — Risk / Early Warning via Isolation Forest
-Trained unsupervised (never sees anomaly_flag during fit), then evaluated
-against the ground-truth anomaly_flag/anomaly_type labels we injected into
-the dataset - so we can report real precision/recall to the panel instead
-of "it looks like it's catching anomalies".
-"""
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest

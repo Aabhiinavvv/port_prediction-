@@ -156,8 +156,53 @@ else:
     st.caption("Cost range reflects genuine forecast uncertainty, not a guaranteed price — confirm against live market rates before committing to a charter.")
     render_table(eligible[["vessel_type","predicted_rate","total_cost_usd","cost_low","cost_high"]].sort_values("total_cost_usd"))
 
-# ---------------- Module 3: Multi-Parcel Fleet Planning ----------------
-st.header("3. Multi-Parcel Fleet Planning")
+# ---------------- Module 3: Port time intelligence ----------------
+st.header("3. Port Time Intelligence")
+st.caption("Estimate anchorage waiting time, berth stay, and voyage arrival from current congestion and port capacity.")
+
+time_vessels = list(predicted_full.keys())
+default_time_vessel = (best.vessel_type if not eligible.empty else time_vessels[0])
+time_vessel = st.selectbox("Vessel for time estimates", time_vessels,
+                           index=time_vessels.index(default_time_vessel))
+latest_port_row = (ts[(ts.route_id == route_id) & (ts.vessel_type == time_vessel)]
+                   .sort_values("date").iloc[-1])
+congestion = float(latest_port_row["port_congestion_index"])
+base_wait_days = float(port["avg_pre_berthing_delay_days"])
+handling_rate = float(port["cargo_handling_rate_tpd"])
+distance_nm = float(routes.loc[routes.route_id == route_id, "distance_nm"].iloc[0])
+
+# The dataset has no observed turnaround or AIS/weather labels. These calibrated
+# estimates expose their assumptions so they can be replaced by live feeds later.
+queue_factor = 0.65 + 0.70 * congestion / 100
+wait_days = base_wait_days * queue_factor
+wait_low = max(0.0, wait_days * 0.70)
+wait_high = wait_days * 1.35
+handling_days = cargo_qty / handling_rate
+admin_days = 0.50
+turnaround_days = handling_days + admin_days + 1.50 * congestion / 100
+
+time_cols = st.columns(3)
+time_cols[0].metric("Port waiting time", f"{wait_days:.1f} days",
+                    help=f"Estimated range: {wait_low:.1f}-{wait_high:.1f} days")
+time_cols[1].metric("Berth stay / turnaround", f"{turnaround_days:.1f} days",
+                    help=f"Cargo handling: {handling_days:.1f} days + admin/congestion allowance")
+time_cols[2].metric("Current congestion", f"{congestion:.0f}/100")
+
+eta_col1, eta_col2, eta_col3 = st.columns(3)
+departure_date = eta_col1.date_input("Planned departure", value=pd.Timestamp.today().date())
+speed_knots = eta_col2.number_input("Cruising speed (knots)", min_value=8.0, max_value=20.0,
+                                    value=12.0, step=0.5)
+weather_state = eta_col3.selectbox("Weather scenario", ["Normal", "Adverse"])
+weather_buffer_hours = 0.0 if weather_state == "Normal" else 18.0
+sailing_hours = distance_nm / speed_knots
+eta = (pd.Timestamp(departure_date) + pd.Timedelta(hours=sailing_hours + wait_days * 24 + weather_buffer_hours))
+st.info(f"Estimated voyage ETA at **{eta.strftime('%d %b %Y, %H:%M')}**. "
+        f"Sailing: {sailing_hours / 24:.1f} days + anchorage queue: {wait_days:.1f} days"
+        f"{f' + weather buffer: {weather_buffer_hours:.0f}h' if weather_buffer_hours else ''}.")
+st.caption("Operational estimate, not a live AIS or weather prediction. Replace with AIS, berth queue, and weather feeds for production use.")
+
+# ---------------- Module 4: Multi-Parcel Fleet Planning ----------------
+st.header("4. Multi-Parcel Fleet Planning")
 st.caption("Optimize vessel assignment across several cargo parcels at once, not just the single route above.")
 
 def is_eligible(vessel_row, port_row, cargo_qty):
@@ -226,8 +271,8 @@ if st.button("Optimize fleet across all parcels"):
 
 st.divider()
 
-# ---------------- Module 4: Idle risk (K-Means) + anomaly flag ----------------
-st.header("4. Idle-Risk & Early-Warning Status")
+# ---------------- Module 5: Idle risk (K-Means) + anomaly flag ----------------
+st.header("5. Idle-Risk & Early-Warning Status")
 
 ref_vtype = "Handysize" if "Handysize" in predicted_rates else list(predicted_rates.keys())[0]
 df_ref = ts[(ts.route_id == route_id) & (ts.vessel_type == ref_vtype)].sort_values("date").reset_index(drop=True)
@@ -281,8 +326,8 @@ recent_window["date"] = recent_window["date"].dt.strftime("%Y-%m-%d")
 st.caption("Latest 30-day freight and congestion readings")
 render_table(recent_window)
 
-# ---------------- Module 4: Multi-Parcel Fleet Allocation ----------------
-st.header("4. Multi-Parcel Fleet Allocation")
+# ---------------- Module 6: Multi-Parcel Fleet Allocation ----------------
+st.header("6. Multi-Parcel Fleet Allocation")
 st.caption("Plan several cargo parcels across different routes at once — the optimizer assigns "
            "the cost-minimizing vessel type to each, jointly, rather than one parcel at a time.")
 

@@ -54,6 +54,13 @@ if available_routes.empty:
 route_id = st.sidebar.selectbox("Origin -> Route", available_routes.route_id.tolist())
 cargo_qty = st.sidebar.number_input("Cargo quantity (tonnes)", min_value=5000, max_value=200000, value=55000, step=5000)
 
+with st.expander("Decision brief", expanded=True):
+    brief_cols = st.columns(4)
+    brief_cols[0].metric("Destination", dest_port)
+    brief_cols[1].metric("Route", route_id)
+    brief_cols[2].metric("Cargo", f"{cargo_qty:,.0f} t")
+    brief_cols[3].metric("Vessel options", "Calculating...")
+
 st.sidebar.markdown("---")
 st.sidebar.caption("Dataset: synthetic, calibrated to realistic freight-market statistics (see DATA_DICTIONARY.md)")
 
@@ -113,6 +120,15 @@ def forecast_all_vessel_types(route_id):
 
 predicted_full = forecast_all_vessel_types(route_id)
 predicted_rates = {v: d["point"] for v, d in predicted_full.items()}
+
+if predicted_full:
+    brief_cols[3].metric("Vessel options", len(predicted_full))
+
+    trend = (ts[(ts.route_id == route_id) & (ts.vessel_type == list(predicted_full)[0])]
+             .sort_values("date")
+             .set_index("date")[[TARGET]])
+    st.subheader("Recent market trend")
+    st.line_chart(trend.tail(90), y_label="USD per tonne", x_label="Date")
 
 cols = st.columns(len(predicted_full))
 for c, (vtype, vals) in zip(cols, predicted_full.items()):
@@ -289,8 +305,17 @@ if "parcel_df" not in st.session_state:
         {"route_id": route_id, "cargo_qty_tonnes": 30000},
     ])
 
-st.caption("Using the two default parcels for this allocation run.")
-edited_parcels = st.session_state.parcel_df
+st.caption("Add, remove, or edit parcels before running the allocation.")
+edited_parcels = st.data_editor(
+    st.session_state.parcel_df,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "route_id": st.column_config.SelectboxColumn("Route", options=routes.route_id.tolist(), required=True),
+        "cargo_qty_tonnes": st.column_config.NumberColumn("Cargo (tonnes)", min_value=5000, step=5000, required=True),
+    },
+    key="parcel_editor",
+)
 
 if st.button("🚢 Optimize fleet allocation across all parcels"):
     parcels = [

@@ -1,8 +1,4 @@
-"""Small, fault-tolerant adapters for free public context data.
 
-These sources are explanatory features, not substitutes for licensed dry-bulk
-fixture or AIS data. All callers must preserve the returned source/status label.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

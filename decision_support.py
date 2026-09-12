@@ -1,8 +1,4 @@
-"""Transparent decision-support calculations for the chartering dashboard.
 
-The prototype intentionally labels operational values as assumptions until they
-are replaced by live AIS, terminal, fleet-management and broker data feeds.
-"""
 from __future__ import annotations
 
 from datetime import datetime, timezone

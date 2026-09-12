@@ -5,3 +5,5 @@ xgboost
 statsmodels
 pulp
 streamlit
+requests>=2.31
+shap>=0.46

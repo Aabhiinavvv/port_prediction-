@@ -7,3 +7,4 @@ pulp
 streamlit
 requests>=2.31
 shap>=0.46
+google-genai>=1.0

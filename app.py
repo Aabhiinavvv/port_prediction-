@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import os
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,12 @@ try:
     HAS_SHAP = True
 except ImportError:
     HAS_SHAP = False
+
+try:
+    from google import genai
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -149,6 +156,108 @@ def just_in_time_plan(route, dest, vessel_type: str, congestion: int, fuel_price
         "fuel_saved": saved_fuel, "cost_saved": saved_fuel * fuel_price,
         "co2_saved": saved_fuel * 3.114, "risk": risk,
     }
+
+def answer_user_query(query: str, context: dict) -> str:
+    """Answer common chartering questions from the current dashboard state."""
+    text = query.lower().strip()
+    best = context["best"]
+    strategy = context["strategy"]
+    jit = context["jit"]
+    route = context["route"]
+    origin = context["origin"]
+    dest = context["dest"]
+    rate = context["rate"]
+    uncertainty = context["uncertainty"]
+
+    if text in {"hi", "hello", "help"} or text.startswith("hello ") or text.startswith("hi "):
+        return ("I can explain the forecast, recommended vessel, estimated cost, port fit, "
+                "charter strategy, JIT arrival plan, risk, alerts, and dataset assumptions. "
+                "Try: 'Why this vessel?', 'What is the risk?', or 'Should I fix now?'")
+    if any(word in text for word in ["vessel", "ship", "why this", "recommend"]):
+        return (f"For {context['cargo']:,.0f} MT on {route.route_id}, the recommended class is **{best.vessel_type}**. "
+                f"It fits {origin.port_name} and {dest.port_name}, uses about {best.utilisation:.0%} of its DWT, "
+                f"and scores {best.multi_objective_score:.1f}/100 under the **{context['priority']}** priority. "
+                f"Estimated freight is ${rate:.2f}/MT, or ${best.total_freight:,.0f} for this parcel.")
+    if any(word in text for word in ["rate", "price", "forecast", "freight", "cost"]):
+        scenario = context["selected_scenario"]
+        return (f"The current XGBoost forecast for {best.vessel_type} is **${rate:.2f}/MT** with an "
+                f"empirical residual band of approximately ±${uncertainty:.2f}/MT. The selected "
+                f"scenario has an indicative all-in cost of ${scenario.all_in_cost_usd:,.0f}. "
+                "These are planning estimates, not live broker quotes.")
+    if any(word in text for word in ["risk", "alert", "danger", "uncertain", "anomaly", "congestion"]):
+        return (f"The composite risk is **{context['risk']}/100**. Signals include congestion "
+                f"{context['congestion']}/100, estimated port time {context['port_days']:.1f} days, "
+                f"forecast uncertainty ±${uncertainty:.2f}/MT, and fleet availability in "
+                f"{int(best.next_available_days)} days. Protection: {strategy['protections'][0].lower()}.")
+    if any(word in text for word in ["jit", "arrival", "slow", "fuel", "carbon", "co2", "berth"]):
+        return (f"The JIT plan is: **{jit['action']}** Predicted berth-ready time is "
+                f"{jit['berth_ready_days']:.1f} days. It avoids about "
+                f"{max(0, jit['early_wait_hours'] - jit['jit_wait_hours']):.0f} anchorage hours, "
+                f"saving an estimated {max(0, jit['fuel_saved']):.1f} tonnes of fuel and "
+                f"{max(0, jit['co2_saved']):.1f} tonnes of CO2.")
+    if any(word in text for word in ["contract", "charter", "fix now", "strategy", "voyage"]):
+        return (f"The recommended posture is **{strategy['posture']}**. {strategy['action']} "
+                f"Rationale: {strategy['rationale']} Indicative saving versus repeated spot "
+                f"exposure is ${strategy['expected_saving']:,.0f}.")
+    if any(word in text for word in ["port", "eligible", "draft", "loa", "beam", "fit"]):
+        return (f"The port gate checks draft, LOA, beam, and cargo capacity at both ends. "
+                f"{best.vessel_type} passes for {context['cargo']:,.0f} MT on {origin.port_name} to "
+                f"{dest.port_name}. Confirm terminal, tide, berth, and stowage acceptance before fixing.")
+    if any(word in text for word in ["dataset", "data", "model", "xgboost", "shap", "explain"]):
+        return ("The system uses 337,524 daily synthetic observations from 2019–2025 across "
+                "33 routes and four vessel classes. XGBoost uses lagged freight, rolling statistics, "
+                "BDI, coal price, congestion, day-of-week, and month. Production would replace this "
+                "calibrated dataset with licensed freight, AIS, terminal, and broker data.")
+    if any(word in text for word in ["live", "weather", "api", "marine"]):
+        return ("Live context is optional and comes from keyless World Bank and Open-Meteo calls. "
+                "It enriches macro and marine risk only; it is not live freight, AIS, or fixture data.")
+    return ("I can answer about the selected route, vessel recommendation, forecast and cost, port "
+            "constraints, charter strategy, JIT arrival, risk, or dataset. Ask a specific question "
+            "such as 'Should I fix now?' or 'Why this vessel?'")
+
+def gemini_answer(query: str, context: dict) -> str | None:
+    """Ask Gemini for a natural-language answer using only current dashboard facts."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or not HAS_GEMINI:
+        return None
+
+    best = context["best"]
+    strategy = context["strategy"]
+    jit = context["jit"]
+    route = context["route"]
+    origin = context["origin"]
+    dest = context["dest"]
+    scenario = context["selected_scenario"]
+    facts = f"""
+Current dashboard facts:
+- Route: {origin.port_name} ({origin.port_code}) to {dest.port_name} ({dest.port_code}); route_id={route.route_id}
+- Cargo: {context['cargo']:,.0f} MT; priority: {context['priority']}; selected voyages: {context['voyages']}
+- Recommended vessel: {best.vessel_type}; utilisation={best.utilisation:.0%}; score={best.multi_objective_score:.1f}/100
+- Forecast: ${context['rate']:.2f}/MT; residual uncertainty +/- ${context['uncertainty']:.2f}/MT
+- Selected scenario all-in cost: ${scenario.all_in_cost_usd:,.0f}
+- Composite risk: {context['risk']}/100; congestion scenario={context['congestion']}/100; port time={context['port_days']:.1f} days
+- Commercial posture: {strategy['posture']}; action={strategy['action']}; rationale={strategy['rationale']}
+- JIT action: {jit['action']}; berth-ready={jit['berth_ready_days']:.1f} days; estimated fuel saved={max(0, jit['fuel_saved']):.1f} tonnes
+"""
+    instructions = """
+You are Charter Assistant for a freight chartering decision dashboard.
+Answer the user's question using only the dashboard facts below. Be concise and business-friendly.
+Explain reasoning when useful. Clearly label model estimates and prototype assumptions.
+Never invent live freight quotes, AIS positions, weather, port acceptance, or legal/commercial guarantees.
+Do not claim that synthetic data is real. Recommend human confirmation before a charter fixture.
+If the question is unrelated, say what topics you can answer: forecast, vessel, port fit, cost, risk,
+charter strategy, JIT arrival, or dataset.
+"""
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=f"{instructions}\n{facts}\nUser question: {query}",
+        )
+        answer = (response.text or "").strip()
+        return answer or None
+    except Exception:
+        return None
 
 def main():
     ts, india_ports, origin_ports, vessels, routes, accuracy = load_data()
@@ -396,6 +505,44 @@ def main():
             st.caption("Click refresh to retrieve keyless public context. The model remains runnable without internet.")
         st.markdown("**Production governance:** retain source, timestamp, licence, quality flag and owner for every feature. Licensed broker/Baltic and AIS data are required for operational freight quotes and live congestion; free sources must not be presented as substitutes.")
         st.download_button("Download selected multi-voyage scenario", scenarios.to_csv(index=False).encode(), "charter_scenario.csv", "text/csv")
+
+    st.divider()
+    st.subheader("Charter Assistant")
+    if os.getenv("GEMINI_API_KEY") and HAS_GEMINI:
+        st.caption("Gemini is enabled. Answers are grounded in the current dashboard calculations and marked as planning guidance.")
+    else:
+        st.caption("Local grounded assistant is active. Add GEMINI_API_KEY to enable Gemini responses; the app works without internet or an API key.")
+    assistant_context = {
+        "best": best,
+        "strategy": strategy,
+        "jit": jit,
+        "route": route,
+        "origin": origin,
+        "dest": dest,
+        "cargo": cargo,
+        "rate": rate,
+        "uncertainty": uncertainty,
+        "risk": risk,
+        "congestion": congestion,
+        "port_days": load_days + discharge_days,
+        "priority": optimization_priority,
+        "voyages": voyages,
+        "selected_scenario": selected_scenario,
+    }
+    if "assistant_messages" not in st.session_state:
+        st.session_state.assistant_messages = [{
+            "role": "assistant",
+            "content": "I am ready to explain this charter recommendation. Ask me why this vessel was selected, whether to fix now, or what the main risks are.",
+        }]
+    for message in st.session_state.assistant_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    prompt = st.chat_input("Ask the Charter Assistant...")
+    if prompt:
+        st.session_state.assistant_messages.append({"role": "user", "content": prompt})
+        response = gemini_answer(prompt, assistant_context) or answer_user_query(prompt, assistant_context)
+        st.session_state.assistant_messages.append({"role": "assistant", "content": response})
+        st.rerun()
 
 if __name__ == "__main__":
     main()

@@ -157,6 +157,34 @@ def just_in_time_plan(route, dest, vessel_type: str, congestion: int, fuel_price
         "co2_saved": saved_fuel * 3.114, "risk": risk,
     }
 
+def procurement_mix_comparison(total_tonnes: int, months: int, spot_rate: float,
+                               contract_discount: float, risk_index: int) -> pd.DataFrame:
+    """Compare spot/contract coverage for a multi-month procurement requirement."""
+    contract_rate = spot_rate * (1 - contract_discount)
+    strategies = [
+        ("100% Spot", 0.00, 1.00, "Maximum flexibility; fully exposed to market moves"),
+        ("100% Contract", 1.00, 0.00, "Maximum price protection; lowest flexibility"),
+        ("60% Contract + 40% Spot", 0.60, 0.40, "Balanced protection and market participation"),
+    ]
+    rows = []
+    for name, contract_share, spot_share, posture in strategies:
+        contract_tonnes = total_tonnes * contract_share
+        spot_tonnes = total_tonnes * spot_share
+        expected_cost = contract_tonnes * contract_rate + spot_tonnes * spot_rate
+        rows.append({
+            "strategy": name,
+            "contract_volume_tonnes": round(contract_tonnes),
+            "spot_volume_tonnes": round(spot_tonnes),
+            "contract_rate_usd_mt": round(contract_rate, 2),
+            "expected_cost_usd": round(expected_cost, 2),
+            "savings_vs_100pct_spot_usd": round(total_tonnes * spot_rate - expected_cost, 2),
+            "market_exposure_pct": round(spot_share * 100, 1),
+            "risk_score": round(risk_index * spot_share + 12 * contract_share),
+            "posture": posture,
+            "months": months,
+        })
+    return pd.DataFrame(rows)
+
 def answer_user_query(query: str, context: dict) -> str:
     """Answer common chartering questions from the current dashboard state."""
     text = query.lower().strip()
@@ -273,6 +301,9 @@ def main():
         cargo = st.number_input("Cargo quantity (MT)", 5_000, 200_000, 55_000, 1_000)
         commodity = st.selectbox("Commodity", ["Thermal coal", "Coking coal", "Iron ore", "Limestone"])
         voyages = st.selectbox("Charter strategy", [1, 3, 6], format_func=lambda n: "Spot / one voyage" if n == 1 else f"{n}-voyage {'short' if n == 3 else 'medium'} term")
+        st.subheader("Procurement requirement")
+        procurement_tonnes = st.number_input("Total requirement (tonnes)", 5_000, 1_000_000, 180_000, 5_000)
+        procurement_months = st.number_input("Planning horizon (months)", 1, 24, 3, 1)
         laycan = st.date_input("Laycan start", date.today() + timedelta(days=21))
         congestion = st.slider("Congestion scenario (0–100)", 0, 100, 45)
         optimization_priority = st.selectbox("Optimization priority", ["Balanced", "Lowest cost", "Lowest CO₂", "Highest reliability"])
@@ -313,6 +344,9 @@ def main():
     cycle = sailing_days + load_days + discharge_days
     risk = min(100, round(20 + congestion * .5 + (uncertainty / rate) * 100))
     spot_rate = float(outlook.forecast_usd_t.iloc[0])
+    mix_comparison = procurement_mix_comparison(
+        int(procurement_tonnes), int(procurement_months), spot_rate, discount_3, risk
+    )
     scenario_rows = []
     for n, discount, reserve in [(1, 0, 0), (3, discount_3, .015), (6, discount_6, .025)]:
         contract_rate = rate * (1 - discount)
@@ -376,6 +410,32 @@ def main():
             if alert["severity"] == "Critical": st.error(message)
             elif alert["severity"] == "Warning": st.warning(message)
             else: st.info(message)
+
+        st.subheader("Procurement strategy comparison")
+        st.write(
+            f"For **{procurement_tonnes:,.0f} tonnes over {procurement_months} months**, compare price protection "
+            "before committing the full requirement."
+        )
+        mix_view = mix_comparison[[
+            "strategy", "contract_volume_tonnes", "spot_volume_tonnes", "expected_cost_usd",
+            "savings_vs_100pct_spot_usd", "market_exposure_pct", "risk_score", "posture",
+        ]].rename(columns={
+            "strategy": "Strategy", "contract_volume_tonnes": "Contract tonnes",
+            "spot_volume_tonnes": "Spot tonnes", "expected_cost_usd": "Expected cost (USD)",
+            "savings_vs_100pct_spot_usd": "Savings vs 100% spot (USD)",
+            "market_exposure_pct": "Market exposure (%)", "risk_score": "Risk score",
+            "posture": "Trade-off",
+        })
+        st.dataframe(mix_view, hide_index=True, use_container_width=True)
+        m1, m2, m3 = st.columns(3)
+        for metric_col, row in zip((m1, m2, m3), mix_comparison.itertuples()):
+            metric_col.metric(row.strategy, f"${row.expected_cost_usd:,.0f}",
+                              f"Save ${row.savings_vs_100pct_spot_usd:,.0f} vs spot")
+        st.bar_chart(mix_comparison.set_index("strategy")[["expected_cost_usd"]], use_container_width=True)
+        st.caption(
+            f"Contract pricing assumes the configured {discount_3:.1%} volume discount. "
+            "Risk score combines current forecast risk with remaining spot-market exposure; it is a planning indicator, not a probability."
+        )
 
     with tabs[1]:
         st.subheader("Multi-objective vessel optimization")
@@ -463,6 +523,9 @@ def main():
         st.bar_chart(scenarios.set_index("voyages")[["all_in_cost_usd"]], use_container_width=True)
         st.success(f"Selected {voyages}-voyage scenario: indicative saving vs repeated spot entry **${selected_scenario.saving_vs_repeated_spot_usd:,.0f}**. This is a planning scenario, not a price guarantee.")
         st.write("Idle-management clause: define congestion trigger, alternate-port option, and next-employment/ballast plan before signing the multi-voyage agreement.")
+        st.subheader("Volume coverage mix")
+        st.dataframe(mix_comparison, hide_index=True, use_container_width=True)
+        st.download_button("Download procurement mix comparison", mix_comparison.to_csv(index=False).encode(), "procurement_mix_comparison.csv", "text/csv")
 
     with tabs[7]:
         st.subheader("Explainable risk cockpit")
@@ -528,6 +591,7 @@ def main():
         "priority": optimization_priority,
         "voyages": voyages,
         "selected_scenario": selected_scenario,
+        "mix_comparison": mix_comparison,
     }
     if "assistant_messages" not in st.session_state:
         st.session_state.assistant_messages = [{
